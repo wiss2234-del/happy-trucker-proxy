@@ -1,0 +1,1 @@
+{"dependencies":{"express":"^4.22.3"},"description":"OpenAI proxy for Happy Trucker AI Navigator","main":"server.js","name":"happy-trucker-proxy","scripts":{"start":"node server.js"},"version":"1.0.0","keywords":[],"author":"","license":"ISC"}
