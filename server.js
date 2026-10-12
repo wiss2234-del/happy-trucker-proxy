@@ -1,13 +1,14 @@
 /**
- * Happy Trucker AI Navigator - OpenAI Proxy Server
+ * Happy Trucker AI Navigator - AI Proxy Server (OpenAI + Anthropic)
  *
- * This server proxies ChatGPT requests from the app, keeping the
- * OpenAI API key secure on the server (never in the app).
+ * This server proxies AI requests from the app, keeping the
+ * API keys secure on the server (never in the app).
  *
  * Deploy: Railway, Render, Fly.io, Google Cloud Run, or any Node.js host.
  *
  * Environment variables:
- *   OPENAI_API_KEY - Your OpenAI API key (required)
+ *   OPENAI_API_KEY - Your OpenAI API key (optional if only using Anthropic)
+ *   ANTHROPIC_API_KEY - Your Anthropic API key (optional if only using OpenAI)
  *   APP_SECRET     - Shared secret the app must send as X-App-Secret (required).
  *                    Generate one (e.g. `openssl rand -hex 32`) and put the same
  *                    value in the app's local.properties as PROXY_APP_SECRET.
@@ -16,7 +17,9 @@
  *
  * Cost controls:
  *   - App-secret auth so only the real app can use the endpoint.
- *   - Model is forced to gpt-4o-mini server-side (clients cannot pick pricier models).
+ *   - Models are forced server-side (clients cannot pick pricier models):
+ *       OpenAI    -> gpt-4o-mini
+ *       Anthropic -> claude-haiku-4-5
  *   - Daily spend cap ($5 default).
  *   - Per-IP rate limit as a second line of defense if the secret leaks.
  */
@@ -26,6 +29,7 @@ const app = express();
 app.use(express.json());
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
+const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const APP_SECRET = process.env.APP_SECRET || '';
 const DAILY_BUDGET = parseFloat(process.env.DAILY_BUDGET_USD || '5.00');
 const PORT = process.env.PORT || 3000;
@@ -56,6 +60,9 @@ function checkRateLimit(ip) {
 // gpt-4o-mini pricing: $0.15 / 1M input tokens, $0.60 / 1M output tokens
 const INPUT_COST_PER_1K = 0.00015;
 const OUTPUT_COST_PER_1K = 0.0006;
+// claude-haiku-4-5 pricing: $0.80 / 1M input tokens, $4.00 / 1M output tokens
+const ANTHROPIC_INPUT_COST_PER_1K = 0.0008;
+const ANTHROPIC_OUTPUT_COST_PER_1K = 0.004;
 
 function checkBudget() {
     const today = new Date().toDateString();
@@ -118,12 +125,91 @@ app.post('/v1/chat/completions', async (req, res) => {
     }
 });
 
+// Anthropic Messages API proxy (Muse).
+// Same protections as the OpenAI endpoint: app-secret auth, per-IP rate
+// limit, daily budget cap. Model is forced to claude-haiku-4-5 server-side.
+app.post('/v1/messages', async (req, res) => {
+    // App authentication
+    if (req.get('X-App-Secret') !== APP_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Rate limit
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    if (!checkRateLimit(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+    }
+
+    // Budget check
+    if (!checkBudget()) {
+        return res.status(429).json({
+            error: 'Daily budget exceeded. Try again tomorrow.'
+        });
+    }
+
+    if (!ANTHROPIC_KEY) {
+        return res.status(500).json({ error: 'Server misconfigured' });
+    }
+
+    try {
+        // Force the cheap model server-side; clients cannot pick pricier ones.
+        // Anthropic requires max_tokens; default to 1024 if the client omits it.
+        const body = {
+            ...(req.body || {}),
+            model: 'claude-haiku-4-5',
+            max_tokens: (req.body && req.body.max_tokens) || 1024
+        };
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': ANTHROPIC_KEY,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify(body)
+        });
+
+        const data = await response.json();
+
+        // Track usage
+        if (data.usage) {
+            const inputCost = (data.usage.input_tokens / 1000) * ANTHROPIC_INPUT_COST_PER_1K;
+            const outputCost = (data.usage.output_tokens / 1000) * ANTHROPIC_OUTPUT_COST_PER_1K;
+            dailyUsage.cost += inputCost + outputCost;
+            console.log(`Usage: $${dailyUsage.cost.toFixed(4)} / $${DAILY_BUDGET}`);
+        }
+
+        res.status(response.status).json(data);
+    } catch (e) {
+        console.error('Proxy error:', e.message);
+        res.status(502).json({ error: 'Upstream error' });
+    }
+});
+
+// Weigh-station status extension point (v99).
+// HONEST STUB: there is no free public real-time open/closed feed for US/CA
+// weigh stations (researched 2026-10-04). This endpoint exists so a future
+// data source (state DOT feed, crowdsourced reports) can plug in without an
+// app update. It NEVER fabricates a status.
+app.get('/api/weigh-station/status', (req, res) => {
+    res.json({
+        id: req.query.id || null,
+        status: 'unknown',
+        note: 'no free real-time source; see app-local dataset for locations'
+    });
+});
+
 // Health check (no auth required so deployment probes stay simple)
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         dailyCost: dailyUsage.cost.toFixed(4),
-        budget: DAILY_BUDGET
+        budget: DAILY_BUDGET,
+        backends: {
+            openai: !!OPENAI_KEY,
+            anthropic: !!ANTHROPIC_KEY
+        }
     });
 });
 
