@@ -225,14 +225,19 @@ app.post('/v1/realtime/session', async (req, res) => {
     }
 
     try {
-        const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
+        const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${OPENAI_KEY}`,
-                'OpenAI-Beta': 'realtime=v1'
+                'Authorization': `Bearer ${OPENAI_KEY}`
             },
-            body: JSON.stringify({ model: 'gpt-realtime', voice: 'alloy' })
+            body: JSON.stringify({
+                session: {
+                    type: 'realtime',
+                    model: 'gpt-realtime',
+                    audio: { output: { voice: 'alloy' } }
+                }
+            })
         });
 
         const data = await response.json();
@@ -251,8 +256,8 @@ app.post('/v1/realtime/session', async (req, res) => {
             `Usage: $${dailyUsage.cost.toFixed(4)} / $${DAILY_BUDGET}`);
 
         res.json({
-            model: data.model || 'gpt-realtime',
-            client_secret: data.client_secret, // { value, expires_at }
+            model: (data.session && data.session.model) || 'gpt-realtime',
+                        client_secret: data.value,
             voice: 'alloy'
         });
     } catch (e) {
