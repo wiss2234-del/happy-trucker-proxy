@@ -31,7 +31,7 @@ app.use(express.json());
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 const APP_SECRET = process.env.APP_SECRET || '';
-const DAILY_BUDGET = parseFloat(process.env.DAILY_BUDGET_USD || '5.00');
+const DAILY_BUDGET = parseFloat(process.env.DAILY_BUDGET_USD || '0.50');
 const PORT = process.env.PORT || 3000;
 
 if (!APP_SECRET) {
