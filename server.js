@@ -187,6 +187,164 @@ app.post('/v1/messages', async (req, res) => {
     }
 });
 
+// OpenAI Realtime session mint (Phase 1: ChatGPT in-app voice sheet).
+// The app calls this with X-App-Secret; the server mints a short-lived
+// ephemeral client secret via the OpenAI Realtime API (the server key
+// never leaves the server). The app then opens a WebSocket to
+// wss://api.openai.com/v1/realtime?model=<model> with the ephemeral key.
+// Same protections as the other endpoints: app-secret auth, per-IP rate
+// limit, shared daily budget. Model is forced to gpt-realtime server-side.
+// Cost guard: realtime audio is per-minute metered, so minting a session
+// reserves the estimated worst-case cost of one full-length session
+// (REALTIME_SESSION_RESERVE_USD) against the daily budget. If the
+// account has no Realtime access, the account error is passed through
+// so the app can report it honestly instead of failing silently.
+const REALTIME_SESSION_RESERVE_USD = 0.50;
+
+app.post('/v1/realtime/session', async (req, res) => {
+    // App authentication
+    if (req.get('X-App-Secret') !== APP_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Rate limit
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    if (!checkRateLimit(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+    }
+
+    // Budget check
+    if (!checkBudget()) {
+        return res.status(429).json({
+            error: 'Daily budget exceeded. Try again tomorrow.'
+        });
+    }
+
+    if (!OPENAI_KEY) {
+        return res.status(500).json({ error: 'Server misconfigured' });
+    }
+
+    try {
+        const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${OPENAI_KEY}`,
+                'OpenAI-Beta': 'realtime=v1'
+            },
+            body: JSON.stringify({ model: 'gpt-realtime', voice: 'alloy' })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Realtime mint refused:', response.status,
+                (data.error && data.error.message) || '');
+            return res.status(response.status).json({
+                error: (data.error && data.error.message) || 'Realtime unavailable'
+            });
+        }
+
+        // Reserve worst-case cost of one full session (shared budget).
+        dailyUsage.cost += REALTIME_SESSION_RESERVE_USD;
+        console.log(`Realtime session minted (+$${REALTIME_SESSION_RESERVE_USD.toFixed(2)} reserved). ` +
+            `Usage: $${dailyUsage.cost.toFixed(4)} / $${DAILY_BUDGET}`);
+
+        res.json({
+            model: data.model || 'gpt-realtime',
+            client_secret: data.client_secret, // { value, expires_at }
+            voice: 'alloy'
+        });
+    } catch (e) {
+        console.error('Realtime mint error:', e.message);
+        res.status(502).json({ error: 'Upstream error' });
+    }
+});
+
+// Gemini Live ephemeral token mint (Phase 2: Gemini in-app voice sheet).
+// The app calls this with X-App-Secret; the server mints a short-lived
+// ephemeral token via Google's auth_tokens API (the server's Google AI key
+// never leaves the server). The app then connects the Live API WebSocket
+// with the token as `access_token` (Google's documented ephemeral-token
+// auth for the Live API). Same protections as the other endpoints:
+// app-secret auth, per-IP rate limit, shared daily budget.
+// Cost guard: like the OpenAI realtime mint, a worst-case session cost is
+// reserved at mint time (REALTIME_SESSION_RESERVE_USD).
+// Honesty: the exact `liveConnectConstraints` field must be confirmed
+// against Google's current auth_tokens docs when this is first exercised;
+// if Google rejects the shape, the account error is passed through so the
+// app reports it instead of failing silently.
+const GOOGLE_AI_KEY = process.env.GOOGLE_AI_KEY;
+
+app.post('/v1/live/session', async (req, res) => {
+    // App authentication
+    if (req.get('X-App-Secret') !== APP_SECRET) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Rate limit
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    if (!checkRateLimit(ip)) {
+        return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
+    }
+
+    // Budget check
+    if (!checkBudget()) {
+        return res.status(429).json({
+            error: 'Daily budget exceeded. Try again tomorrow.'
+        });
+    }
+
+    if (!GOOGLE_AI_KEY) {
+        return res.status(500).json({ error: 'Server misconfigured: GOOGLE_AI_KEY not set' });
+    }
+
+    try {
+        const now = Date.now();
+        const body = {
+            uses: 1,
+            expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
+            newSessionExpireTime: new Date(now + 30 * 60 * 1000).toISOString(),
+            liveConnectConstraints: { model: 'models/gemini-2.0-flash-live-001' }
+        };
+
+        const response = await fetch(
+            'https://generativelanguage.googleapis.com/v1beta/auth_tokens',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': GOOGLE_AI_KEY
+                },
+                body: JSON.stringify(body)
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Live token mint refused:', response.status,
+                (data.error && data.error.message) || '');
+            return res.status(response.status).json({
+                error: (data.error && data.error.message) || 'Live token unavailable'
+            });
+        }
+
+        // Reserve worst-case cost of one full session (shared budget).
+        dailyUsage.cost += REALTIME_SESSION_RESERVE_USD;
+        console.log(`Gemini live token minted (+$${REALTIME_SESSION_RESERVE_USD.toFixed(2)} reserved). ` +
+            `Usage: $${dailyUsage.cost.toFixed(4)} / $${DAILY_BUDGET}`);
+
+        res.json({
+            token: data.token,
+            model: 'models/gemini-2.0-flash-live-001'
+        });
+    } catch (e) {
+        console.error('Live token mint error:', e.message);
+        res.status(502).json({ error: 'Upstream error' });
+    }
+});
+
 // Weigh-station status extension point (v99).
 // HONEST STUB: there is no free public real-time open/closed feed for US/CA
 // weigh stations (researched 2026-10-04). This endpoint exists so a future
