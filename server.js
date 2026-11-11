@@ -275,9 +275,11 @@ app.post('/v1/realtime/session', async (req, res) => {
 // app-secret auth, per-IP rate limit, shared daily budget.
 // Cost guard: like the OpenAI realtime mint, a worst-case session cost is
 // reserved at mint time (REALTIME_SESSION_RESERVE_USD).
-// Honesty (2026-11-10, verified live): v1beta/auth_tokens rejects
-// `liveConnectConstraints` ("Cannot find field"); Google's SDK examples
-// mint ephemeral tokens via v1alpha, so this endpoint uses v1alpha.
+// Honesty (2026-11-10, corrected from live testing + official docs):
+// Google's ephemeral-token docs (aistudio.google.com/docs/live-api/
+// ephemeral-tokens) use v1beta/auth_tokens, and liveConnectConstraints
+// must include config (sessionResumption + responseModalities).
+// Model-only constraints were rejected with "Cannot find field".
 // The app connects the token to the v1beta BidiGenerateContentConstrained
 // WebSocket (Google's documented ephemeral-token auth).
 const GOOGLE_AI_KEY = process.env.GOOGLE_AI_KEY;
@@ -311,11 +313,17 @@ app.post('/v1/live/session', async (req, res) => {
             uses: 1,
             expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
             newSessionExpireTime: new Date(now + 30 * 60 * 1000).toISOString(),
-            liveConnectConstraints: { model: 'models/gemini-2.0-flash-live-001' }
+            liveConnectConstraints: {
+                model: 'models/gemini-2.0-flash-live-001',
+                config: {
+                    sessionResumption: {},
+                    responseModalities: ['AUDIO']
+                }
+            }
         };
 
         const response = await fetch(
-            'https://generativelanguage.googleapis.com/v1alpha/auth_tokens',
+            'https://generativelanguage.googleapis.com/v1beta/auth_tokens',
             {
                 method: 'POST',
                 headers: {
