@@ -275,13 +275,12 @@ app.post('/v1/realtime/session', async (req, res) => {
 // app-secret auth, per-IP rate limit, shared daily budget.
 // Cost guard: like the OpenAI realtime mint, a worst-case session cost is
 // reserved at mint time (REALTIME_SESSION_RESERVE_USD).
-// Honesty (2026-11-10, corrected from live testing + official docs):
-// Google's ephemeral-token docs (aistudio.google.com/docs/live-api/
-// ephemeral-tokens) use v1beta/auth_tokens, and liveConnectConstraints
-// must include config (sessionResumption + responseModalities).
-// Model-only constraints were rejected with "Cannot find field".
-// The app connects the token to the v1beta BidiGenerateContentConstrained
-// WebSocket (Google's documented ephemeral-token auth).
+// Honesty (2026-11-10): Google's auth_tokens endpoint rejected
+// liveConnectConstraints ("Cannot find field") in every shape tried —
+// v1beta/v1alpha, model-only and full config — despite the official docs
+// showing it. Minting unconstrained (docs' basic example). Token is still
+// 1-use / 30-min, and the app connects it to the v1beta
+// BidiGenerateContentConstrained WebSocket (ephemeral-token auth).
 const GOOGLE_AI_KEY = process.env.GOOGLE_AI_KEY;
 
 app.post('/v1/live/session', async (req, res) => {
@@ -312,14 +311,14 @@ app.post('/v1/live/session', async (req, res) => {
         const body = {
             uses: 1,
             expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
-            newSessionExpireTime: new Date(now + 30 * 60 * 1000).toISOString(),
-            liveConnectConstraints: {
-                model: 'models/gemini-2.0-flash-live-001',
-                config: {
-                    sessionResumption: {},
-                    responseModalities: ['AUDIO']
-                }
-            }
+            newSessionExpireTime: new Date(now + 30 * 60 * 1000).toISOString()
+            // No liveConnectConstraints: Google's auth_tokens endpoint
+            // rejected the field ("Cannot find field") in every shape we
+            // tried (v1beta/v1alpha, model-only and full config), even
+            // though the official docs show it. Mint unconstrained instead
+            // (the docs' basic example); the token is still 1-use / 30-min.
+            // The app picks the model at connect time (its LIVE_MODELS list,
+            // gemini-2.0-flash-live-001 first, 2.5 fallback).
         };
 
         const response = await fetch(
