@@ -349,7 +349,10 @@ app.post('/v1/live/session', async (req, res) => {
             `Usage: $${dailyUsage.cost.toFixed(4)} / $${DAILY_BUDGET}`);
 
         res.json({
-            token: data.token,
+            // Google returns the ephemeral token in the `name` field
+            // (docs: "pass the value under token.name"). `data.token`
+            // was undefined, so successful mints returned no token.
+            token: data.name,
             model: 'models/gemini-2.0-flash-live-001'
         });
     } catch (e) {
