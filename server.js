@@ -275,10 +275,11 @@ app.post('/v1/realtime/session', async (req, res) => {
 // app-secret auth, per-IP rate limit, shared daily budget.
 // Cost guard: like the OpenAI realtime mint, a worst-case session cost is
 // reserved at mint time (REALTIME_SESSION_RESERVE_USD).
-// Honesty: the exact `liveConnectConstraints` field must be confirmed
-// against Google's current auth_tokens docs when this is first exercised;
-// if Google rejects the shape, the account error is passed through so the
-// app reports it instead of failing silently.
+// Honesty (2026-11-10, verified live): v1beta/auth_tokens rejects
+// `liveConnectConstraints` ("Cannot find field"); Google's SDK examples
+// mint ephemeral tokens via v1alpha, so this endpoint uses v1alpha.
+// The app connects the token to the v1beta BidiGenerateContentConstrained
+// WebSocket (Google's documented ephemeral-token auth).
 const GOOGLE_AI_KEY = process.env.GOOGLE_AI_KEY;
 
 app.post('/v1/live/session', async (req, res) => {
@@ -314,7 +315,7 @@ app.post('/v1/live/session', async (req, res) => {
         };
 
         const response = await fetch(
-            'https://generativelanguage.googleapis.com/v1beta/auth_tokens',
+            'https://generativelanguage.googleapis.com/v1alpha/auth_tokens',
             {
                 method: 'POST',
                 headers: {
